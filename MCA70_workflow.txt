@@ -1,0 +1,133 @@
+###################### Metagenome and -transcriptome analysis of mid-chain alkane-oxidizing enrichment cultures at 70°C from Guaymas Basin sediment ######################
+
+########### Metagenome ###########
+## Raw read trimming (for each sample)
+# BBMap 38.79
+bbduk.sh in1=R1.fastq in2=R2.fastq out=R1_trimmed.fastq out2=R2_trimmed.fastq threads=20 minlength=50 qtrim=r trimq=20 # R1: forward read; R2: reverse read
+
+## Estimation of microbial community with phyloFlash (for each sample)
+# phyloFlash 138.1
+phyloFlash.pl -lib sample_phylo -read1 R1_trimmed.fastq -read2 R2_trimmed.fastq -readlength 250 # -readlength 150 for pentane and original slurry sample
+
+## Assembly
+# SPAdes 3.14.0
+# Coassembly for hexane - tetradecane samples
+spades.py --threads 15 -m 350 \
+          --pe1-1 1_R1_trimmed.fastq \ # hexane read 1
+          --pe1-2 1_R2_trimmed.fastq \ # hexane read 2
+          --pe1-1 2_R1_trimmed.fastq \ # heptane read 1
+          --pe1-2 2_R2_trimmed.fastq \ # heptane read 2
+          --pe1-1 3_R1_trimmed.fastq \ # octane read 1
+          --pe1-2 3_R2_trimmed.fastq \ # octane read 2
+          --pe1-1 4_R1_trimmed.fastq \ # nonane read 1
+          --pe1-2 4_R2_trimmed.fastq \ # nonane read 2
+          --pe1-1 5_R1_trimmed.fastq \ # decane read 1
+          --pe1-2 5_R2_trimmed.fastq \ # decane read 2
+          --pe1-1 6_R1_trimmed.fastq \ # dodecane read 1
+          --pe1-2 6_R2_trimmed.fastq \ # dodecane read 2
+          --pe1-1 7_R1_trimmed.fastq \ # tetradecane read 1
+          --pe1-2 7_R2_trimmed.fastq \ # tetradecane read 2
+
+# Single assemblies pentane and original slurry sediment samples
+spades.py --threads 15 -m 350 \
+          --pe1-1 R1_trimmed.fastq \
+          --pe1-2 R2_trimmed.fastq \
+
+## Reformatting of assembly fasta with anvi'o
+# anvi'o 7.1
+anvi-script-reformat-fasta scaffolds.fasta -o anvio_contigs.fa --simplify-names --report scaffolds_report.txt --min-len 3000
+anvi-script-reformat-fasta scaffolds.fasta -o anvio_contigs.fa --simplify-names --report scaffolds_report.txt --min-len 2500 # pentane
+anvi-script-reformat-fasta scaffolds.fasta -o anvio_contigs.fa --simplify-names --report scaffolds_report.txt --min-len 1000 # original slurry
+
+## Mapping of trimmed reads to the assembly
+# Bowtie2 2.3.2
+# Create Bowtie2 index
+bowtie2-build anvio_contigs.fa bowtie2_index
+# Read mapping (for each sample)
+bowtie2 -x bowtie2_index --local -q \
+        -1 R1_trimmed.fastq -2 R2_trimmed.fastq \
+				-S sample.sam \
+
+## Conversion of SAM to BAM files
+# SAMtools 1.5
+samtools view -Sb  sample.sam  >  sample-RAW.bam
+# anvi'o 7.1
+anvi-init-bam sample-RAW.bam -o sample.bam
+
+## Generation of contigs and profile databases with anvi'o (https://merenlab.org/2016/06/22/anvio-tutorial-v2/)
+# anvi'o 7.1
+# Generate contis database
+anvi-gen-contigs-database -f anvio_contigs.fa \
+                          -o anvio_contigs.db -n contigs_db_description \
+                          --description project_description.txt \
+# Annotation of contigs database
+anvi-run-hmms -c anvio_contigs.db
+anvi-run-kegg-kofams -c anvio_contigs.db
+anvi-run-pfams -c anvio_contigs.db
+anvi-run-ncbi-cogs -c anvio_contigs.db
+# Getting gene calls and importing taxonomies
+anvi-get-sequences-for-gene-calls -c anvio_contigs.db -o gene-calls.fa
+centrifuge -f -x $CENTRIFUGE_BASE/p+h+v/p+h+v gene-calls.fa \
+           -S centrifuge_hits.tsv \
+           --report-file centrifuge_report.tsv
+anvi-import-taxonomy-for-genes -c anvio_contigs.db \
+                               -i centrifuge_report.tsv \
+                               centrifuge_hits.tsv -p centrifuge
+# Generation of profile database (for each sample)
+anvi-profile -i sample.bam \
+             -c anvio_contigs.db \
+             --sample-name sample} \
+             --output-dir PROFILES/sample \
+             --cluster-contigs
+# Merging of anvi'o profiles
+anvi-merge PROFILES/*/PROFILE.db \
+           -o SAMPLES_MERGED \
+           -c anvio_contigs.db \
+           -W --enforce-hierarchical-clustering
+# Anvi'o interactive interface
+anvi-interactive -c anvio_contigs.db -p SAMPLES_MERGED/PROFILE.db
+
+## Quality check of MAGs with CheckM and taxonomic classification with GTDB
+# CheckM 1.1.3
+checkm lineage_wf -x file_extension mag_dir out_dir -f out_dir/output.txt # mag_dir: MAG directory; out_dir: output directory
+# GTDB 1.5.1
+gtdbtk classify_wf -x file_extension --genome_dir mag_dir --out_dir out_dir
+## Annotation of MAGs with Prokka
+# Prokka 1.14.6
+prokka --kingdom Archaea --outdir out_dir --addgenes --force --centre C --locustag L mag.fa #--kingdom Bacteria for bacterial MAGs
+## MAG comparison via average nucleotide identity (ANI) and average amino acid identity (AAI) calculation
+# fastANI 1.32
+fastANI -q query_genome.fa -r reference_genome.fa -o output_file
+# CompareM 0.1.2
+comparem aai_wf mag_dir out_dir --file_ext file_extension
+
+## Calculation of relative abundances with CoverM (for all samples)
+# CoverM 0.6.1
+coverm genome --coupled R1_trimmed.fastq R2_trimmed.fastq --genome-fasta-directory mag_dir --genome-fasta-extension file_extension --discard-unmapped --dereplicate --bam-file-cache-directory bam_cache --dereplication-ani 95 --dereplication-prethreshold-ani 90 --dereplication-precluster-method finch --dereplication-output-cluster-definition dereplication_list --dereplication-output-representative-fasta-directory dereplicated_bins -o out_dir
+
+## Phylogenomic tree calculation
+# anvi'o 7.1
+anvi-get-sequences-for-hmm-hits --external-genomes tree_genomes.txt \
+                                -o alignment.fa \
+                                --hmm-source \ # Bacteria_71 for Bacteria, Archaea_76 for Archaea
+                                --return-best-hit \
+                                --get-aa-sequences \
+                                --partition-file partition.txt \
+                                --concatenate
+# RAxML 8.2.12
+raxmlHPC-PTHREADS -m PROTGAMMAAUTO -f a -N autoMRE -p 43726 -s alignment.fa -k -x 43726 -n tree_name -q partition.txt
+
+## Phylogenetic tree calculation
+# RAxML 8.2.12
+raxmlHPC-PTHREADS-AVX2 -f a -s alignment.phy -n tree_name -m PROTGAMMAAUTO -x 12345 -p 12345 -N autoMRE -k
+
+########### Metatranscriptome ###########
+## Raw read trimming (for each sample)
+# BBMap 38.79
+bbduk.sh in1=R1.fastq in2=R2.fastq out=R1_trimmed.fastq out2=R2_trimmed.fastq threads=20 minlength=50 qtrim=r trimq=20
+
+## Mapping of trimmed reads to MAGs (for each sample)
+# BBMap 38.87
+bbmap.sh ref=mag.fa in=R1_trimmed.fastq in2=R2_trimmed.fastq nodisk minid=0.98 ambig=random outm=sample.sam sam=1.3 2>&1 | tee analysis
+# featureCounts 1.4.6-p5
+featureCounts -p -t gene -g locus_tag --minOverlap 10 -Q 10 -a mag.gff -o sample_counts.txt sample.sam 2>&1 | tee analysis
