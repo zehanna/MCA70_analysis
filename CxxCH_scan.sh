@@ -1,7 +1,7 @@
 ﻿#!/bin/bash -l
 
 #### Cytochrome C analysis - CxxCH motif scan ####
-# Script originally by Viola Krukenberg & modified by Rafael Laso-Pérez
+# Script originally by Viola Krukenberg (https://orcid.org/0000-0001-8369-8114); modified by Rafael Laso-Pérez (https://orcid.org/0000-0002-6912-7865)
 
 # Define working directory
 wd="working_directory"
